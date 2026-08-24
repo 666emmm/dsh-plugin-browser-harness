@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-browser-harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "browser-harness 插件：让 DeepSeek Harness 的 Agent 通过本地 Chrome CDP 完成网页交互（点击/输入/导航/截图），并提供 设置 > 浏览器连接 诊断界面。browser-harness plugin: agent-driven local Chrome control via CDP, with a connection diagnostics settings page.",
   "type": "module",
   "main": "src/index.js",
