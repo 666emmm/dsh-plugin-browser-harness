@@ -62,11 +62,11 @@ Agent-driven local Chrome control for DeepSeek Harness via [browser-harness](htt
 
 ```bash
 # 从 GitHub 安装（推荐）
-dsh plugin --profile web add github:<you>/dsh-plugin-browser-harness
+dsh plugin --profile web add github:666emmm/dsh-plugin-browser-harness
 
 # 本地 tarball（开发）
 npm pack
-dsh plugin --profile web add ./dsh-plugin-browser-harness-0.1.0.tgz
+dsh plugin --profile web add ./dsh-plugin-browser-harness-0.1.1.tgz
 
 # 本地目录（开发，注意：link 目录需放在 profile 内以便模块解析）
 dsh plugin --profile web add link:./vendor/dsh-plugin-browser-harness
