@@ -283,7 +283,8 @@ export async function publishToGithub({ reason = 'update' } = {}) {
     return { ok: false, reason: `git commit 失败: ${(commit.err || commit.out).trim().slice(0, 300)}` }
   }
 
-  // 3. Determine next patch version from package.json.
+  // 3. Determine next patch version from package.json, bump it, and commit
+  //    the version change so the tag points at the release content.
   const pkgPath = join(dir, 'package.json')
   const pkg = JSON.parse(await readFile(pkgPath, 'utf8'))
   const [maj, min, pat] = (pkg.version || '0.0.0').split('.').map((n) => Number(n) || 0)
@@ -291,6 +292,10 @@ export async function publishToGithub({ reason = 'update' } = {}) {
   pkg.version = next
   await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8')
   await runGit(dir, ['add', 'package.json'])
+  const vcommit = await runGit(dir, ['commit', '-m', `chore: bump version to ${next} (${reason})`])
+  if (!vcommit.ok && !/nothing to commit|no changes added/.test((vcommit.err || vcommit.out))) {
+    return { ok: false, reason: `git commit (version bump) 失败: ${(vcommit.err || vcommit.out).trim().slice(0, 300)}` }
+  }
 
   // 4. Tag + push.
   const tag = `v${next}`
