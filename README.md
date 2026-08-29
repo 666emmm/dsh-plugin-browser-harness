@@ -66,7 +66,7 @@ dsh plugin --profile web add github:666emmm/dsh-plugin-browser-harness
 
 # 本地 tarball（开发）
 npm pack
-dsh plugin --profile web add ./dsh-plugin-browser-harness-0.1.1.tgz
+dsh plugin --profile web add ./dsh-plugin-browser-harness-0.2.0.tgz
 
 # 本地目录（开发，注意：link 目录需放在 profile 内以便模块解析）
 dsh plugin --profile web add link:./vendor/dsh-plugin-browser-harness
@@ -116,6 +116,11 @@ npm pack        # 打 tarball 用于本地安装
 | HTTP 路由 | `/browser-harness/api/*` |
 | 设置页 | `浏览器连接` |
 | CSS 前缀 | `bhn-` |
+
+## 兼容性 / Compatibility
+
+- **dsh ≥ v0.1.2-alpha.1**：client 注入已从被移除的 `@deepseek-ai/dsh-client-runtime` 迁移到 `@deepseek-ai/dsh-client-ui-renderer`（`ctx.slots` 的运行时提供方）。dsh v0.1.1-rc.2 及更早版本仍受支持（ui-renderer 在 rc.2 中已存在）。
+- 其余插件 API（cordis patch / settings / webServer / systemPrompt / tools / __ModuleLoader__）在 v0.1.1-rc.2 → v0.1.2-alpha.1 之间保持不变。
 
 ## 已知注意事项
 

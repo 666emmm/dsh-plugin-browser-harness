@@ -205,7 +205,7 @@ export function apply(ctx) {
       const llm = ctx.get('llm')
       if (llm !== undefined) {
         try {
-          llm.registerConfigurableProviders([{ provider: 'browser-harness', displayName: '浏览器连接（browser-harness）' }])
+          llm.registerConfigurableProviders([{ provider: 'browser-harness', displayName: '浏览器连接（browser-harness）', settingsNs: 'browser-harness', settingsPath: [] }])
         } catch { /* best effort */ }
       }
     } catch {
