@@ -1,17 +1,18 @@
 // dsh-plugin-browser-harness — update detection & execution.
 //
 // Two layers, both reported in one check:
-//   project  — the upstream repo browser-use/browser-use. Latest release tag
-//              is read via `git ls-remote --tags` (goes through the user's
+//   project  — the upstream repo browser-use/browser-harness. Latest release
+//              tag is read via `git ls-remote --tags` (goes through the user's
 //              git proxy config, which is the only route out on proxy-only
 //              machines; Node fetch ignores HTTP_PROXY entirely).
 //   cli      — the installed browser-harness CLI (the thing we can actually
 //              upgrade). Latest is read from PyPI (direct fetch works).
 //
-// The project version the CURRENT install corresponds to is resolved through
-// a small mapping table (browser-use releases ship browser-harness under its
-// own version). When the mapping has no entry we fall back to reporting the
-// CLI layer only and never claim a project update.
+// The browser-harness repo tags releases v0.1.x that match the PyPI CLI
+// version 1:1 (v0.1.10 ↔ browser-harness 0.1.10), so the project version the
+// current install corresponds to is the CLI version itself. CLI_TO_PROJECT
+// stays as an override table for any future divergence; when the mapping has
+// no entry we report the CLI version and never claim a project update.
 //
 // Updates run `browser-harness --update -y` — the CLI's own upgrade path
 // (`uv tool upgrade browser-harness` + daemon restart).
@@ -22,13 +23,16 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { runHarnessArgs, resolveHarnessBin } from './engine.js'
 
 const UPDATES_TTL_MS = 30 * 60 * 1000
-const REPO = 'browser-use/browser-use'
+// The CLI's own repo — tags v0.1.x that match PyPI versions 1:1.
+const REPO = 'browser-use/browser-harness'
 const PYPI_JSON = 'https://pypi.org/pypi/browser-harness/json'
 
-// browser-harness CLI version -> browser-use release tag it shipped with.
-// Extend when a new CLI version is installed and its upstream release is known.
+// browser-harness CLI version -> repo release tag it shipped with.
+// The repo tags match PyPI versions 1:1 (v0.1.10 ↔ 0.1.10), so entries are
+// normally redundant; keep this as an override for future divergence.
 const CLI_TO_PROJECT = {
-  '0.1.9': '0.13.8',
+  '0.1.9': '0.1.9',
+  '0.1.10': '0.1.10',
 }
 
 const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
@@ -123,7 +127,7 @@ export async function fetchProjectLatest() {
     child.on('close', (code) => {
       clearTimeout(timer)
       if (code !== 0) return resolve(null)
-      // Tags look like `refs/tags/v0.13.8` (or `0.13.8`). Take the newest semver.
+      // Tags look like `refs/tags/v0.1.10` (or `0.1.10`). Take the newest semver.
       let best = null
       let bestCmp = null
       for (const line of out.split(/\r?\n/)) {
