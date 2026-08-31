@@ -30,7 +30,7 @@ const PYPI_JSON = 'https://pypi.org/pypi/browser-harness/json'
 // browser-harness CLI version -> repo release tag it shipped with.
 // The repo tags match PyPI versions 1:1 (v0.1.10 ↔ 0.1.10), so entries are
 // normally redundant; keep this as an override for future divergence.
-const CLI_TO_PROJECT = {
+export const CLI_TO_PROJECT = {
   '0.1.9': '0.1.9',
   '0.1.10': '0.1.10',
 }

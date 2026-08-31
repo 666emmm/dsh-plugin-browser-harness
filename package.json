@@ -17,7 +17,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node scripts/smoke-test.js"
+    "test": "node scripts/smoke-test.js",
+    "check-update": "node scripts/check-update.js"
   },
   "publishConfig": {
     "access": "public"

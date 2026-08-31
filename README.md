@@ -171,9 +171,20 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
 ## 开发 / Develop
 
 ```bash
-npm test        # 冒烟测试：CLI 连通性 + 工具描述符 + browser_page_info 执行
-npm pack        # 打 tarball 用于本地安装
+npm test            # 冒烟测试：CLI 连通性 + 工具描述符 + browser_page_info 执行
+npm run check-update  # 更新检测自检：逐层验证 CLI 地址检测 / PyPI / GitHub，失败时给出原因
+npm pack            # 打 tarball 用于本地安装
 ```
+
+### 更新检测自检 / check-update
+
+设置页「更新」区块显示"无法获取"时，在插件目录跑 `npm run check-update`，
+会分 A（CLI 地址）→ B（PyPI）→ C（GitHub）→ D（完整 checkUpdates）四层报告：
+
+- **A 失败**：CLI 未安装 → `uv tool install --python 3.12 browser-harness`
+- **B 失败**：PyPI 不可达。注意 **Node fetch 不走 HTTP_PROXY 环境变量**，依赖 PyPI 代理的环境需自行解决
+- **C 失败**：GitHub 不可达（git 代理未配置）→ `git config --global http.proxy <代理>` / `https.proxy`
+- **D 中 project 为 none**：`CLI_TO_PROJECT` 映射缺失，不影响 CLI 升级检测
 
 ## 命名约定 / Naming
 
