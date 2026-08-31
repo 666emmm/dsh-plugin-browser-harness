@@ -12,6 +12,7 @@
 import { createBrowserTools } from './tools.js'
 import { runJson, jsonSnippet, resolveHarnessBin, installGuidance } from './engine.js'
 import { checkUpdates, runCliUpdate, publishToGithub } from './update.js'
+import { runUpdateDiagnostics } from './diagnostics.js'
 import z from '@deepseek-ai/schemastery'
 
 export const name = 'browser-harness'
@@ -127,6 +128,15 @@ async function handleUpdateCheck(req, res) {
   } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
 }
 
+// 深度检测：逐层（CLI 地址 / PyPI / GitHub / 完整 checkUpdates）运行并返回
+// 每层结果与失败原因，供设置页「运行检测」按钮展示。
+async function handleCheckUpdate(_req, res) {
+  try {
+    const result = await runUpdateDiagnostics()
+    send(res, { ok: true, ...result })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
 async function handleUpdate(req, res) {
   try {
     const body = await readBody(req)
@@ -183,6 +193,7 @@ export function apply(ctx) {
       { kind: 'exact', path: '/browser-harness/api/screenshot', handler: handleScreenshot },
       { kind: 'exact', path: '/browser-harness/api/chrome-hint', handler: handleChromeHint },
       { kind: 'exact', path: '/browser-harness/api/update-check', handler: handleUpdateCheck },
+      { kind: 'exact', path: '/browser-harness/api/check-update', handler: handleCheckUpdate },
       { kind: 'exact', path: '/browser-harness/api/update', handler: handleUpdate },
     ]
     for (const route of routes) {
