@@ -15,13 +15,16 @@ const DEFAULT_TIMEOUT_MS = 60_000
 // ── binary resolution ────────────────────────────────────────────────────────
 // Resolution order:
 //   1. $BROWSER_HARNESS_BIN (explicit override)
-//   2. `browser-harness` on PATH
-//   3. uv tool install default location (~/.local/bin/browser-harness(.exe))
-//   4. the venv shim directory next to the uv tool (Windows: %APPDATA%/uv/tools)
+//   2. uv tool install default location (~/.local/bin/browser-harness(.exe))
+//   3. the venv shim directory next to the uv tool (Windows: %APPDATA%/uv/tools)
+//   4. `browser-harness` on PATH (last resort)
+// NOTE: the bare name MUST come last — the running dsh web process's PATH
+// snapshot often predates `uv tool install` and lacks the uv bin dir, so a
+// bare-name spawn would ENOENT even though the CLI is installed. The absolute
+// candidates exist on disk regardless of PATH and are checked first.
 function candidatePaths() {
   const list = []
   if (process.env.BROWSER_HARNESS_BIN) list.push(process.env.BROWSER_HARNESS_BIN)
-  list.push('browser-harness') // resolved by spawn via PATH
   const home = process.env.USERPROFILE || process.env.HOME || ''
   if (home) {
     list.push(join(home, '.local', 'bin', process.platform === 'win32' ? 'browser-harness.exe' : 'browser-harness'))
@@ -30,6 +33,7 @@ function candidatePaths() {
       if (appData) list.push(join(appData, 'uv', 'tools', 'browser-harness', 'Scripts', 'browser-harness.exe'))
     }
   }
+  list.push('browser-harness') // resolved by spawn via PATH — last resort only
   return [...new Set(list)]
 }
 
