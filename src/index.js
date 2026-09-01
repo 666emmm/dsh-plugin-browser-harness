@@ -213,12 +213,6 @@ export function apply(ctx) {
           if (v && Number.isFinite(v.timeoutSec)) globalThis.__BH_TIMEOUT_MS = v.timeoutSec * 1000
         } catch { /* best effort */ }
       })
-      const llm = ctx.get('llm')
-      if (llm !== undefined) {
-        try {
-          llm.registerConfigurableProviders([{ provider: 'browser-harness', displayName: '浏览器连接（browser-harness）', settingsNs: 'browser-harness', settingsPath: [] }])
-        } catch { /* best effort */ }
-      }
     } catch {
       // settings unavailable — run without the namespace
     }
