@@ -8,7 +8,7 @@
 // Fully self-contained (node:child_process / node:fs only) — zero runtime deps.
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const DEFAULT_TIMEOUT_MS = 60_000
 
@@ -48,6 +48,41 @@ export function resolveHarnessBin() {
     try {
       if (existsSync(p)) return p
     } catch { /* ignore */ }
+  }
+  return null
+}
+
+/**
+ * Resolve the MCP server entry point that ships with browser-harness >= 0.1.13
+ * (`browser-harness-mcp`). Derived from the CLI location so no machine-specific
+ * absolute path has to be written into configuration.
+ * @param {string|null|undefined} bin - resolved CLI executable; omitted to resolve it.
+ * @returns {string|null} the MCP executable, or null when this install has none.
+ */
+export function resolveMcpBin(bin) {
+  const cli = bin === undefined ? resolveHarnessBin() : bin
+  if (!cli) return null
+  const names = process.platform === 'win32'
+    ? ['browser-harness-mcp.exe', 'browser-harness-mcp.cmd', 'browser-harness-mcp']
+    : ['browser-harness-mcp']
+  const dirs = []
+  const add = (dir) => {
+    if (dir && !dirs.includes(dir)) dirs.push(dir)
+  }
+  try { add(dirname(cli)) } catch { /* a bare command name has no directory */ }
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  if (home) {
+    add(join(home, '.local', 'bin'))
+    const appData = process.env.APPDATA || ''
+    if (appData) add(join(appData, 'uv', 'tools', 'browser-harness', 'Scripts'))
+  }
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = join(dir, name)
+      try {
+        if (existsSync(candidate)) return candidate
+      } catch { /* ignore */ }
+    }
   }
   return null
 }

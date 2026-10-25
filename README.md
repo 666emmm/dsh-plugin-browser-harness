@@ -27,7 +27,7 @@ browser-harness --doctor         # 应输出 [ok] chrome running / [ok] daemon a
 dsh plugin --profile web add github:666emmm/dsh-plugin-browser-harness
 ```
 
-安装后**重启 dsh web** 生效。之后在设置页「浏览器连接」里看到状态为已连接，即可让 Agent 使用 `browser_*` 工具。
+安装后**重启 dsh web** 生效。之后在设置页「浏览器连接」里看到状态为已连接，即可让 Agent 使用浏览器工具（`mcp` 模式：`mcp__bh__browser_*`；`builtin` 模式：`browser_*`）。
 
 ---
 
@@ -38,7 +38,7 @@ dsh plugin --profile web add github:666emmm/dsh-plugin-browser-harness
 | DeepSeek Harness | ≥ v0.1.2-alpha.1 | 插件宿主 |
 | Node.js | ≥ 18 | 插件运行时 |
 | [uv](https://astral.sh/uv/) | 任意较新版本 | 安装 Python CLI |
-| [browser-harness CLI](https://github.com/browser-use/browser-harness) | Python 3.12 | 真正的浏览器控制（CDP） |
+| [browser-harness CLI](https://github.com/browser-use/browser-harness) | Python ≥3.11；`mcp` 模式需 **≥0.1.13 且带 `[mcp]` extra** | 真正的浏览器控制（CDP） |
 | Chrome | 任意 | 被控制的浏览器 |
 
 ### Chrome 远程调试（很多人卡在这）
@@ -56,12 +56,15 @@ CLI 通过 CDP 连 Chrome，Chrome 必须开启远程调试：
 ## 安装 / Install
 
 ```bash
+# 推荐：装带 MCP 支持的 CLI（mcp 模式需要；builtin 模式 0.1.10 也能用）
+uv tool install --python 3.12 "browser-harness[mcp]>=0.1.13"
+
 # 从 GitHub 安装（推荐）
 dsh plugin --profile web add github:666emmm/dsh-plugin-browser-harness
 
 # 本地 tarball（开发）
 npm pack
-dsh plugin --profile web add ./dsh-plugin-browser-harness-0.2.0.tgz
+dsh plugin --profile web add ./dsh-plugin-browser-harness-0.3.0.tgz
 
 # 本地目录（开发，注意：link 目录需放在 profile 内以便模块解析）
 dsh plugin --profile web add link:./vendor/dsh-plugin-browser-harness
@@ -104,7 +107,16 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
 
 ## 功能 / Features
 
-- **Agent 工具 / tools**（8 个，`browser_*` 前缀）：
+- **能力层可切换 / switchable capability layer**（行配置 `mode`，默认 `mcp`）：
+
+  | 模式 | 工具面 | 说明 |
+  |---|---|---|
+  | `mcp`（默认） | 23 个 `mcp__bh__browser_*` + `browser_doctor` | 通过宿主自带 `@deepseek-ai/dsh-mcp-client` 挂载 `browser-harness-mcp`；工具集随 CLI 升级自动增长。需要 CLI ≥0.1.13 且安装 `[mcp]` extra |
+  | `builtin` | 8 个 `browser_*` | 插件内置工具（下表），不依赖 `[mcp]`；CLI 缺失或找不到 `browser-harness-mcp` 时也会自动降级到这里 |
+
+  `mcp` 模式工具（23，前缀 `mcp__bh__browser_`）：`new_tab` `goto` `page_info` `click` `type` `fill` `press` `scroll` `screenshot` `list_tabs` `current_tab` `switch_tab` `close_tab` `ensure_real_tab` `wait` `wait_for_load` `wait_for_element` `js` `cdp` `upload_file` `http_get` `start_recording` `stop_recording`
+
+  `builtin` 模式 8 个：
 
   | 工具 | 作用 |
   |---|---|
@@ -115,9 +127,9 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
   | `browser_type` | 聚焦元素输入文本 |
   | `browser_js` | 执行 JS 并返回 JSON 结果 |
   | `browser_screenshot` | 截图返回文件路径 |
-  | `browser_doctor` | 连接诊断（Chrome / daemon / CLI） |
+  | `browser_doctor` | 连接诊断（Chrome / daemon / CLI）—— **任何模式下都存在** |
 
-- **提示词注入 / prompt**：引导 Agent 在网页交互任务中使用 browser_* 工具
+- **提示词注入 / prompt**：按当前模式注入对应的工具名（`mcp__bh__browser_*` 或 `browser_*`）
 - **设置页 / settings**：连接状态（CLI / daemon / 当前页面）、一键诊断、截图、远程调试引导
 - **插件配置卡片**：browser-harness 调用超时（5–300 秒）
 - **更新检测 / updates**：自动检查上游 [browser-use/browser-harness](https://github.com/browser-use/browser-harness) 项目与 browser-harness CLI 是否有新版本，确认后一键升级
@@ -126,18 +138,20 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
 
 ```
 ┌─────────────────────── DSH 进程（Node/cordis）──────────────────────┐
-│  src/index.js   ── 入口：systemPrompt 段 + 工具注册 + HTTP API      │
-│  src/engine.js  ── browser-harness CLI 调用层（spawn/UTF-8/JSON）   │
-│  src/tools.js   ── 8 个 agent 工具（自包含 defineTool，零依赖）     │
+│  src/index.js   ── 入口：能力层选择 + systemPrompt + HTTP API        │
+│  src/engine.js  ── CLI 定位（resolveHarnessBin/resolveMcpBin）+ 调用 │
+│  src/tools.js   ── builtin 模式的 8 个工具（defineTool，零依赖）     │
 │  src/update.js  ── 更新检测（GitHub 项目 + PyPI CLI）+ 执行升级      │
-└──────────────────────────────────┬──────────────────────────────────┘
-                                   │ stdin 喂 Python 片段，stdout 解析 JSON
-                                   ▼
-              browser-harness CLI（Python，CDP 连本地 Chrome）
+└───────────┬───────────────────────────────────────┬─────────────────┘
+            │ mcp 模式（默认）                       │ builtin 模式
+            ▼                                       ▼
+  dsh-mcp-client ──stdio JSON-RPC──▶ browser-harness-mcp      stdin 喂片段
+                                     （Python，CDP 连本地 Chrome）
 ```
 
 ### 关键设计
 
+- **能力层可切换**：`mcp` 模式把 CLI 自带的服务端（23 工具）挂给宿主的 `@deepseek-ai/dsh-mcp-client`；`builtin` 模式用插件自带的 8 个工具。找不到 `browser-harness-mcp` 时自动降级，插件本身永远能激活。
 - **Node ⇄ Python 桥**：`runHarness(code)` 把 Python 片段经 stdin 喂给 `browser-harness`，helpers（`page_info`/`new_tab`/`click_at_xy`…）预导入；`runHarnessArgs(args)` 处理 `--version`/`--update` 等命令行参数。统一 `print(json.dumps(_result, ensure_ascii=True))` 输出，Node 端解析最后一行 JSON。
 - **参数防注入**：工具参数 `JSON.stringify` 后 base64 编码嵌进 Python 片段，杜绝引号/换行/中文破坏语法。
 - **零运行时依赖**：工具描述符手写 dsh-tools 子集（`hoistRequired`/`validateArgs`），不 import `@deepseek-ai/dsh-tools`，规避 pnpm 布局差异。
@@ -201,6 +215,10 @@ npm pack            # 打 tarball 用于本地安装
 
 - **dsh ≥ v0.1.2-alpha.1**：client 注入已从被移除的 `@deepseek-ai/dsh-client-runtime` 迁移到 `@deepseek-ai/dsh-client-ui-renderer`（`ctx.slots` 的运行时提供方）。dsh v0.1.1-rc.2 及更早版本仍受支持（ui-renderer 在 rc.2 中已存在）。
 - 其余插件 API（cordis patch / settings / webServer / systemPrompt / tools / __ModuleLoader__）在 v0.1.1-rc.2 → v0.1.2-alpha.1 之间保持不变。
+- **v0.3.0（本版）新增 MCP 能力层**：默认通过宿主自带的 `@deepseek-ai/dsh-mcp-client` 挂载 `browser-harness-mcp`，工具从 8 个变成 23 个（`mcp__bh__browser_*`），且随 CLI 升级自动增长。找不到 `browser-harness-mcp`（CLI < 0.1.13 / 没装 `[mcp]`）时自动降级为内置 8 工具，插件本身照常激活。工具名按模式生成，提示词同步。
+- **v0.2.1** 修掉一处会在 dsh 0.2.1-rc.1 上直接起不来的写法：客户端 `exports.inject` 不再声明 `settingsScope`。该服务在 0.2.x 被移除后，硬等待会让插件永久 pending，启动审计随即报 `web boot: 1 entry did not activate`。现在改为运行时探测：服务存在 → 插件配置卡照常出现；不存在 → 只跳过卡片，`设置 → 浏览器连接` 页面（走插件自己的 HTTP API）不受影响。
+- 宿主侧 `settings.register(namespace, schema)`（0.1.x 有、0.2.x 没有）同样改为显式探测，缺失时退回默认超时 60 秒。
+- 下限说明：`dsh.client.inject` 是静态列表，`ui-renderer` 只在 **≥ v0.1.2-alpha.1** 存在，所以低于该版本的 dsh 不受支持（一份 manifest 无法同时满足两种 `slots` 来源）。
 
 ## 已知注意事项
 

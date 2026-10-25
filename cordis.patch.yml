@@ -1,7 +1,16 @@
 # dsh-plugin-browser-harness: agent-driven local Chrome control via CDP.
-# Single bundle row: tools + browser-connection prompt + HTTP API (registered
-# only when a webServer exists) + the 设置 > 浏览器连接 settings page and the
-# 设置 > 插件 > 插件配置 settings card.
+# Single bundle row: capability layer (browser-harness MCP server, or this
+# plugin's built-in tools when it is unavailable) + browser-connection prompt +
+# HTTP API (registered only when a webServer exists) + the 设置 > 浏览器连接
+# settings page and the 设置 > 插件 > 插件配置 settings card.
+#
+# config:
+#   mode: mcp | builtin   — default mcp; builtin never needs CLI >= 0.1.13
+#   serverName: bh        — MCP tool namespace: mcp__<serverName>__browser_*
+#   toolCallTimeoutMs     — per MCP tool call, default 120000
 - insert:
     - id: browser-harness
       name: 'dsh-plugin-browser-harness'
+      config:
+        mode: mcp
+        serverName: bh

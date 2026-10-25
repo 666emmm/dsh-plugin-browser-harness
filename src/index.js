@@ -10,7 +10,7 @@
 //  4. Settings namespace `browser-harness` (timeout, default tab URL) with a
 //     settings card in 设置 > 插件 > 插件配置.
 import { createBrowserTools } from './tools.js'
-import { runJson, jsonSnippet, resolveHarnessBin, installGuidance } from './engine.js'
+import { runJson, jsonSnippet, resolveHarnessBin, resolveMcpBin, installGuidance } from './engine.js'
 import { checkUpdates, runCliUpdate, publishToGithub } from './update.js'
 import { runUpdateDiagnostics } from './diagnostics.js'
 import z from '@deepseek-ai/schemastery'
@@ -159,29 +159,141 @@ async function handleUpdate(req, res) {
   }
 }
 
-export function apply(ctx) {
-  // 1. Browser-connection prompt section.
+// ── capability layer: MCP server (preferred) or this plugin's built-in tools ──
+const DEFAULT_MCP_SERVER_NAME = 'bh'
+const DEFAULT_MCP_TIMEOUT_MS = 120_000
+const DOCTOR = 'browser_doctor'
+
+/**
+ * Read the loader row config defensively: this plugin exports no Config schema,
+ * so an older host may pass anything (or nothing) through.
+ * @param {unknown} config - raw loader config.
+ * @returns {{ mode: 'mcp'|'builtin', serverName: string, toolCallTimeoutMs: number }}
+ */
+function readConfig(config) {
+  const c = config !== null && typeof config === 'object' ? config : {}
+  const raw = typeof c.mode === 'string' ? c.mode.trim().toLowerCase() : ''
+  const serverName = typeof c.serverName === 'string' ? c.serverName.trim() : ''
+  return {
+    mode: raw === 'builtin' ? 'builtin' : 'mcp',
+    serverName: serverName === '' ? DEFAULT_MCP_SERVER_NAME : serverName,
+    toolCallTimeoutMs: Number.isFinite(c.toolCallTimeoutMs) && c.toolCallTimeoutMs > 0
+      ? c.toolCallTimeoutMs
+      : DEFAULT_MCP_TIMEOUT_MS,
+  }
+}
+
+/**
+ * Public name of one browser tool in the active mode. MCP-mounted tools are
+ * namespaced by the host's MCP client as `mcp__<serverName>__<rawName>`.
+ * @param {string} label - trailing name, e.g. `page_info`.
+ * @param {'mcp'|'builtin'} mode - active capability layer.
+ * @param {string} serverName - MCP namespace.
+ * @returns {string}
+ */
+function toolName(label, mode, serverName) {
+  return mode === 'mcp' ? `mcp__${serverName}__browser_${label}` : `browser_${label}`
+}
+
+/**
+ * Prompt section body. Tool names must match what is actually registered, so the
+ * text is built per mode instead of hard-coding one naming scheme.
+ * @param {'mcp'|'builtin'} mode - active capability layer.
+ * @param {string} serverName - MCP namespace.
+ * @returns {string}
+ */
+function promptText(mode, serverName) {
+  const n = (label) => toolName(label, mode, serverName)
+  if (mode === 'mcp') {
+    return [
+      `网页交互任务（点击、输入、导航、截图、读取需 JS 渲染或登录态的页面）请使用 ${n('*')} 工具：`,
+      `1. 先 ${n('page_info')} 确认连接与当前页面；`,
+      `2. 首次导航用 ${n('new_tab')}(url)，之后用 ${n('goto')}(url)；`,
+      `3. 等页面/元素就绪用 ${n('wait_for_element')} / ${n('wait_for_load')}，不要用固定 sleep 猜；`,
+      `4. 表单优先 ${n('fill')}(selector, text)，聚焦输入才用 ${n('type')}；`,
+      `5. 读 DOM 用 ${n('js')}，看布局用 ${n('screenshot')}；${n('click')} 是坐标点击，点前先确认元素可见；`,
+      `6. 多标签用 ${n('list_tabs')} / ${n('switch_tab')}；需要任意 CDP 能力时才用 ${n('cdp')}；`,
+      `7. 连接失败时先跑 ${DOCTOR} 诊断（该工具在任何模式下都叫 ${DOCTOR}）。`,
+      'For interactive web tasks use the browser tools: page_info first, wait_for_element before acting, fill for inputs, js/screenshot for inspection, cdp only when no dedicated tool fits, doctor when connections fail.',
+    ].join('\n')
+  }
+  return [
+    `网页交互任务（点击、输入、导航、截图、读取需 JS 渲染或登录态的页面）请使用 ${n('*')} 工具：`,
+    `1. 先 ${n('page_info')} 确认连接与当前页面；`,
+    `2. 首次导航用 ${n('new_tab')}(url)，之后用 ${n('goto')}(url)；`,
+    `3. 优先用 ${n('js')} 读 DOM / ${n('screenshot')} 看布局，坐标点击 ${n('click')} 前先确认元素可见；`,
+    `4. 连接失败时先跑 ${DOCTOR} 诊断。`,
+    'For interactive web tasks use the built-in browser tools: page_info first, new_tab for first navigation, js/screenshot for inspection, doctor when connections fail.',
+  ].join('\n')
+}
+
+/**
+ * Mount browser-harness' own MCP server through the host's generic MCP client.
+ * Never throws: a machine without the CLI (or with an older one) still gets the
+ * built-in tool set plus a working doctor, so this plugin can always activate.
+ * @param {object} ctx - plugin context.
+ * @param {{ mode: 'mcp'|'builtin', serverName: string, toolCallTimeoutMs: number }} cfg - resolved config.
+ * @returns {Promise<'mcp'|'builtin'>} the mode actually in effect.
+ */
+async function mountCapability(ctx, cfg) {
+  if (cfg.mode === 'builtin') return 'builtin'
+  const warn = (message) => {
+    try { ctx.logger?.warn?.(message) } catch { /* best effort */ }
+  }
+  let mcpBin = null
+  try {
+    mcpBin = resolveMcpBin(resolveHarnessBin())
+  } catch { /* resolution is best effort */ }
+  if (mcpBin === null) {
+    warn('browser-harness: browser-harness-mcp not found (needs CLI >= 0.1.13 with the [mcp] extra); using the built-in tool set')
+    return 'builtin'
+  }
+  try {
+    const mcp = await import('@deepseek-ai/dsh-mcp-client')
+    if (typeof mcp.apply !== 'function') throw new Error('@deepseek-ai/dsh-mcp-client exports no apply()')
+    ctx.plugin(
+      { name: mcp.name, apply: mcp.apply, inject: mcp.inject, Config: mcp.Config },
+      {
+        transport: 'stdio',
+        serverName: cfg.serverName,
+        command: mcpBin,
+        args: [],
+        toolCallTimeoutMs: cfg.toolCallTimeoutMs,
+        // A broken MCP server must never block this plugin's activation: doctor and
+        // the settings page stay reachable, and the MCP client retries on its own.
+        failOnStartupError: false,
+      },
+    )
+    try { ctx.logger?.info?.(`browser-harness: MCP tools mounted (serverName=${cfg.serverName})`) } catch { /* best effort */ }
+    return 'mcp'
+  } catch (error) {
+    warn(`browser-harness: MCP client unavailable (${errMsg(error)}); using the built-in tool set`)
+    return 'builtin'
+  }
+}
+
+export async function apply(ctx, config) {
+  const cfg = readConfig(config)
+
+  // 1. Capability layer: the MCP server when available, built-in tools otherwise.
+  const mode = await mountCapability(ctx, cfg)
+
+  // 2. Browser-connection prompt section (tool names follow the active mode).
   const sp = ctx.get('systemPrompt')
   if (sp !== undefined) {
     sp.section({
       name: 'browser-harness:connection',
       order: -40,
-      text: () => [
-        '网页交互任务（点击、输入、导航、截图、读取需 JS 渲染或登录态的页面）请使用 browser_* 工具：',
-        '1. 先 browser_page_info 确认连接与当前页面；',
-        '2. 首次导航用 browser_new_tab(url)，之后用 browser_goto(url)；',
-        '3. 优先用 browser_js 读 DOM / browser_screenshot 看布局，坐标点击 browser_click 前先确认元素可见；',
-        '4. 连接失败时先跑 browser_doctor 诊断。',
-        'For interactive web tasks use browser_* tools: page_info first, new_tab for first navigation, js/screenshot for inspection, doctor when connections fail.',
-      ].join('\n'),
+      text: () => promptText(mode, cfg.serverName),
     })
   }
 
-  // 2. Tools.
+  // 3. Tools: the doctor is this plugin's own in every mode; the other seven are
+  //    registered only when the MCP layer is not supplying them.
   const tools = ctx.get('tools')
   if (tools !== undefined) {
     for (const tool of createBrowserTools()) {
-      tools.register(tool)
+      if (tool.name === DOCTOR || mode !== 'mcp') tools.register(tool)
     }
   }
 
@@ -204,6 +316,10 @@ export function apply(ctx) {
   // 4. Settings namespace + plugin card.
   ctx.inject(['settings'], (sctx) => {
     try {
+      // dsh 0.1.x exposes `settings.register(namespace, schema)`; dsh 0.2.x dropped it
+      // (settings are declared through the plugin's Config schema instead). Probe it so
+      // the timeout keeps working on old versions and silently falls back on new ones.
+      if (typeof sctx.settings?.register !== 'function') throw new Error('settings.register unavailable')
       const scope = sctx.settings.register('browser-harness', z.object({
         timeoutSec: z.number().min(5).max(300).default(60),
       }), { base: { timeoutSec: 60 } })
