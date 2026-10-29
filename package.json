@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "dsh-plugin-browser-harness",
   "version": "0.3.1",
   "description": "browser-harness 鎻掍欢锛氳 DeepSeek Harness 鐨?Agent 閫氳繃鏈湴 Chrome CDP 瀹屾垚缃戦〉浜や簰锛堢偣鍑?杈撳叆/瀵艰埅/鎴浘锛夛紝骞舵彁渚?璁剧疆 > 娴忚鍣ㄨ繛鎺?璇婃柇鐣岄潰銆俠rowser-harness plugin: agent-driven local Chrome control via CDP, with a connection diagnostics settings page.",
