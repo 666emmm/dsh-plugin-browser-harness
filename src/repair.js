@@ -168,13 +168,24 @@ export async function dispatchRepair(opts) {
   const message = buildMessage(findings, context)
   const requestId = `bh-repair-${hashText(findings)}`
 
-  const promptInto = async (sessionId) => sessionController.prompt({
-    requestId,
-    sessionId,
-    mode: 'queue',
-    content: [{ type: 'text', text: message }],
-    clientTimeZone: 'Asia/Shanghai',
-  })
+  // prompt 的第二个参数是必需的 AbortSignal —— Remote 方法第一行就是
+  // `signal.throwIfAborted()`，漏传会直接抛 Cannot read properties of undefined。
+  const promptInto = async (sessionId) => {
+    const abort = new AbortController()
+    // 本地拦截器：给这次投递一个上限，避免宿主侧卡住时永远挂着。
+    const timer = setTimeout(() => { try { abort.abort() } catch { /* ignore */ } }, 30_000)
+    try {
+      return await sessionController.prompt({
+        requestId,
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: message }],
+        clientTimeZone: 'Asia/Shanghai',
+      }, abort.signal)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
 
   // 1. 先试复用的那个会话
   if (typeof state.sessionId === 'string' && state.sessionId !== '') {
