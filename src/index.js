@@ -227,6 +227,7 @@ async function handleUpdate(req, res) {
 const DEFAULT_MCP_SERVER_NAME = 'bh'
 const DEFAULT_MCP_TIMEOUT_MS = 120_000
 const DOCTOR = 'browser_doctor'
+const SELECTOR_CLICK = 'browser_click_selector'
 
 /**
  * Read the loader row config defensively: this plugin exports no Config schema,
@@ -275,19 +276,21 @@ function promptText(mode, serverName) {
       `2. 首次导航用 ${n('new_tab')}(url)，之后用 ${n('goto')}(url)；`,
       `3. 等页面/元素就绪用 ${n('wait_for_element')} / ${n('wait_for_load')}，不要用固定 sleep 猜；`,
       `4. 表单优先 ${n('fill')}(selector, text)，聚焦输入才用 ${n('type')}；`,
-      `5. 读 DOM 用 ${n('js')}，看布局用 ${n('screenshot')}；${n('click')} 是坐标点击，点前先确认元素可见；`,
-      `6. 多标签用 ${n('list_tabs')} / ${n('switch_tab')}；需要任意 CDP 能力时才用 ${n('cdp')}；`,
-      `7. 连接失败时先跑 ${DOCTOR} 诊断（该工具在任何模式下都叫 ${DOCTOR}）。`,
-      'For interactive web tasks use the browser tools: page_info first, wait_for_element before acting, fill for inputs, js/screenshot for inspection, cdp only when no dedicated tool fits, doctor when connections fail.',
+      `5. 读 DOM 用 ${n('js')}，看布局用 ${n('screenshot')}；`,
+      `6. 点击按选择器走 ${SELECTOR_CLICK}(selector)，一步完成；${n('click')}(x, y) 只收坐标，需要精确坐标或选择器不好写时才用它（该工具在任何模式下都叫 ${SELECTOR_CLICK}）；`,
+      `7. 多标签用 ${n('list_tabs')} / ${n('switch_tab')}；需要任意 CDP 能力时才用 ${n('cdp')}；`,
+      `8. 连接失败时先跑 ${DOCTOR} 诊断（该工具在任何模式下都叫 ${DOCTOR}）。`,
+      'For interactive web tasks use the browser tools: page_info first, wait_for_element before acting, fill for inputs, click_selector for clicks, js/screenshot for inspection, cdp only when no dedicated tool fits, doctor when connections fail.',
     ].join('\n')
   }
   return [
     `网页交互任务（点击、输入、导航、截图、读取需 JS 渲染或登录态的页面）请使用 ${n('*')} 工具：`,
     `1. 先 ${n('page_info')} 确认连接与当前页面；`,
     `2. 首次导航用 ${n('new_tab')}(url)，之后用 ${n('goto')}(url)；`,
-    `3. 优先用 ${n('js')} 读 DOM / ${n('screenshot')} 看布局，坐标点击 ${n('click')} 前先确认元素可见；`,
-    `4. 连接失败时先跑 ${DOCTOR} 诊断。`,
-    'For interactive web tasks use the built-in browser tools: page_info first, new_tab for first navigation, js/screenshot for inspection, doctor when connections fail.',
+    `3. 点击按选择器走 ${SELECTOR_CLICK}(selector)，一步完成；${n('click')}(x, y) 只收坐标；`,
+    `4. 优先用 ${n('js')} 读 DOM / ${n('screenshot')} 看布局；`,
+    `5. 连接失败时先跑 ${DOCTOR} 诊断。`,
+    'For interactive web tasks use the built-in browser tools: page_info first, new_tab for first navigation, click_selector for clicks, js/screenshot for inspection, doctor when connections fail.',
   ].join('\n')
 }
 
@@ -352,12 +355,14 @@ export async function apply(ctx, config) {
     })
   }
 
-  // 3. Tools: the doctor is this plugin's own in every mode; the other seven are
-  //    registered only when the MCP layer is not supplying them.
+  // 3. Tools: the doctor and the selector click are this plugin's own in every
+  //    mode; the other seven are registered only when the MCP layer is not
+  //    supplying them. (The MCP server has no selector-based click, only
+  //    coordinate `click`, so the convenience wrapper must always be ours.)
   const tools = ctx.get('tools')
   if (tools !== undefined) {
     for (const tool of createBrowserTools()) {
-      if (tool.name === DOCTOR || mode !== 'mcp') tools.register(tool)
+      if (tool.name === DOCTOR || tool.name === SELECTOR_CLICK || mode !== 'mcp') tools.register(tool)
     }
   }
 

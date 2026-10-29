@@ -243,6 +243,64 @@ except Exception as e:
     }),
 
     defineTool({
+      name: 'browser_click_selector',
+      description: '按 CSS 选择器点击元素：内部先取该元素包围盒中心，再点击，一步完成（browser_click 需要先自己量坐标）。元素不存在或尺寸为零时返回 error。/ Click an element by CSS selector: resolves the element box center internally, then clicks — one step, unlike browser_click which needs coordinates measured first. Returns an error when the element is missing or has zero size.',
+      parameters: {
+        selector: { type: 'string', required: true, description: 'CSS 选择器，例如 "#btn" 或 "button.submit"。/ CSS selector, e.g. "#btn" or "button.submit".' },
+        nth: { type: 'number', description: '匹配多个时取第几个，从 0 开始，默认 0。/ Index among matches, 0-based; default 0.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            x: { type: 'number' },
+            y: { type: 'number' },
+            tag: { type: 'string' },
+            text: { type: 'string' },
+            error: { type: 'string' },
+          },
+        },
+        render: renderText,
+      },
+      async execute(args) {
+        return execSnippet(args, `
+_result = { 'ok': True }
+try:
+    _js = """
+(function(a){
+  var els = document.querySelectorAll(a.selector);
+  if (!els.length) return {ok:false, error:"no element matches " + a.selector};
+  if (a.nth < 0 || a.nth >= els.length) return {ok:false, error:"index " + a.nth + " out of range (" + els.length + " matches)"};
+  var el = els[a.nth];
+  el.scrollIntoView({block:"center", inline:"center"});
+  var r = el.getBoundingClientRect();
+  if (!r || r.width <= 0 || r.height <= 0) return {ok:false, error:"element has zero size: " + a.selector};
+  return {ok:true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || "").trim().slice(0,80)};
+})(__ARGS__)
+""".replace('__ARGS__', json.dumps({'selector': _args['selector'], 'nth': int(_args.get('nth') or 0)}))
+    _box = js(_js)
+    if isinstance(_box, str):
+        _box = json.loads(_box)
+    if not _box.get('ok'):
+        _result['ok'] = False
+        _result['error'] = _box.get('error') or 'element not found'
+    else:
+        _result['x'] = _box['x']
+        _result['y'] = _box['y']
+        _result['tag'] = _box['tag']
+        _result['text'] = _box['text']
+        click_at_xy(_box['x'], _box['y'])
+        wait_for_load()
+except Exception as e:
+    _result['ok'] = False
+    _result['error'] = str(e)
+`)
+      },
+    }),
+
+    defineTool({
       name: 'browser_type',
       description: '在当前聚焦的元素中键入文本（先点击目标元素使其聚焦）。/ Type text into the currently focused element (click the target first to focus it).',
       parameters: {
