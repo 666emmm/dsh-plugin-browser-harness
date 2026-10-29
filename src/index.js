@@ -13,9 +13,19 @@ import { createBrowserTools } from './tools.js'
 import { runJson, jsonSnippet, resolveHarnessBin, resolveMcpBin, installGuidance } from './engine.js'
 import { checkUpdates, runCliUpdate, publishToGithub } from './update.js'
 import { runUpdateDiagnostics } from './diagnostics.js'
+import { dispatchRepair, resetRepairSession, readState as readRepairState, stateFile } from './repair.js'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 
 export const name = 'browser-harness'
+
+// 修复会话要改的两个目录 —— 启动时按本文件的真实位置推导，不写死。
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+const REPO_DIR = process.env.BH_REPO_DIR || 'D:\\大D老师\\dsh-plugin-browser-harness'
+
+// handler 是模块级函数，拿不到 apply(ctx) 的 ctx；把用得到的那两个服务存这里。
+const ctxRef = { sessionController: undefined, workspaceRegistry: undefined }
 
 // ── tiny HTTP helpers (plain node:http) ──
 const errMsg = (e) => (e && e.message) ? e.message : String(e)
@@ -83,11 +93,16 @@ async function handleDoctor(_req, res) {
     const bin = resolveHarnessBin()
     if (!bin) return send(res, { ok: false, error: installGuidance() })
     const out = await runJson(jsonSnippet(`
-import json
+import io, json, contextlib
 _result = { 'ok': True }
 try:
-    result = run_doctor()
-    _result['detail'] = json.dumps(result, ensure_ascii=True, default=str) if isinstance(result, (dict, list)) else str(result)
+    _buf = io.StringIO()
+    with contextlib.redirect_stdout(_buf):
+        result = run_doctor()
+    _detail = _buf.getvalue().strip()
+    if not _detail:
+        _detail = json.dumps(result, ensure_ascii=True, default=str) if isinstance(result, (dict, list)) else str(result)
+    _result['detail'] = _detail
 except Exception as e:
     _result['ok'] = False
     _result['error'] = str(e)
@@ -130,10 +145,59 @@ async function handleUpdateCheck(req, res) {
 
 // 深度检测：逐层（CLI 地址 / PyPI / GitHub / 完整 checkUpdates）运行并返回
 // 每层结果与失败原因，供设置页「运行检测」按钮展示。
-async function handleCheckUpdate(_req, res) {
+//
+// 有异常时（且 repair=1，默认开启）把结论递给专用的「修复会话」，由那里的
+// Agent 自己读代码、改代码。第一次新建会话，之后复用同一个 sessionId。
+async function handleCheckUpdate(req, res) {
   try {
+    const params = new URL(req.url, 'http://localhost').searchParams
     const result = await runUpdateDiagnostics()
-    send(res, { ok: true, ...result })
+    const repair = { attempted: false }
+    if (params.get('repair') !== '0') {
+      try {
+        repair.attempted = true
+        repair.result = await dispatchRepair({
+          diag: result,
+          sessionController: ctxRef.sessionController,
+          workspaceRegistry: ctxRef.workspaceRegistry,
+          cwd: process.cwd(),
+          paths: {
+            installedDir: PLUGIN_DIR,
+            repoDir: REPO_DIR,
+            bin: resolveHarnessBin(),
+          },
+          force: params.get('force') === '1',
+        })
+      } catch (e) {
+        repair.result = { ok: false, action: 'failed', reason: errMsg(e) }
+      }
+    }
+    send(res, { ok: true, ...result, repair })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+// 修复会话的状态：记住的 sessionId、上次发送时间、状态文件路径，
+// 以及两个必需服务是否真的被注入到了 —— 否则界面看不出自愈是"跳过"还是"没能力"。
+async function handleRepairStatus(_req, res) {
+  try {
+    const repair = await readRepairState()
+    send(res, {
+      ok: true,
+      ...repair,
+      stateFile: stateFile(),
+      services: {
+        sessionController: ctxRef.sessionController !== undefined,
+        workspaceRegistry: ctxRef.workspaceRegistry !== undefined,
+      },
+    })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+// 忘掉记住的会话（会话坏了、或想强制下次换一个新的）。
+async function handleRepairReset(_req, res) {
+  try {
+    await resetRepairSession()
+    send(res, { ok: true, ...(await readRepairState()) })
   } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
 }
 
@@ -297,6 +361,17 @@ export async function apply(ctx, config) {
     }
   }
 
+  // 3b. 自愈会话需要的两个服务。check-update 的 handler 是模块级函数，
+  //     拿不到 ctx，所以把引用存到 ctxRef；服务缺席时 dispatchRepair 会自己降级。
+  for (const serviceName of ['sessionController', 'workspaceRegistry']) {
+    ctx.inject([serviceName], (sctx) => {
+      try {
+        ctxRef[serviceName] = sctx.get(serviceName)
+      } catch { /* 服务不可用就让自愈功能降级 */ }
+      sctx.effect(() => () => { ctxRef[serviceName] = undefined }, `browser-harness: ${serviceName} ref`)
+    })
+  }
+
   // 3. 设置 > 浏览器连接 HTTP API.
   ctx.inject(['webServer'], (wctx) => {
     const routes = [
@@ -307,6 +382,8 @@ export async function apply(ctx, config) {
       { kind: 'exact', path: '/browser-harness/api/update-check', handler: handleUpdateCheck },
       { kind: 'exact', path: '/browser-harness/api/check-update', handler: handleCheckUpdate },
       { kind: 'exact', path: '/browser-harness/api/update', handler: handleUpdate },
+      { kind: 'exact', path: '/browser-harness/api/repair-status', handler: handleRepairStatus },
+      { kind: 'exact', path: '/browser-harness/api/repair-reset', handler: handleRepairReset },
     ]
     for (const route of routes) {
       wctx.effect(() => wctx.webServer.register(route), `browser-harness: ${route.path} route`)

@@ -345,20 +345,26 @@ except Exception as e:
         render: renderText,
       },
       async execute() {
-        const res = await runJson(`
-import json
+        // `run_doctor()` prints its report to stdout and returns an exit code, so
+        // the report must be captured with redirect_stdout — reading the return
+        // value alone yields "0". This snippet must also go through jsonSnippet:
+        // without its trailing print() there is no JSON line and runJson fails
+        // with "cannot parse output".
+        const res = await runJson(jsonSnippet(`
+import io, json, contextlib
 _result = { 'ok': True }
 try:
-    result = run_doctor()
-    if isinstance(result, dict):
-        _result['detail'] = json.dumps(result, ensure_ascii=True, default=str)
-    else:
-        _result['detail'] = str(result)
-    _result['ok'] = bool(getattr(result, 'ok', True)) if not isinstance(result, dict) else True
+    _buf = io.StringIO()
+    with contextlib.redirect_stdout(_buf):
+        result = run_doctor()
+    _detail = _buf.getvalue().strip()
+    if not _detail:
+        _detail = json.dumps(result, ensure_ascii=True, default=str) if isinstance(result, (dict, list)) else str(result)
+    _result['detail'] = _detail
 except Exception as e:
     _result['ok'] = False
     _result['error'] = str(e)
-`)
+`))
         if (!res.ok) {
           throw new Error((res.error && res.error.message) || 'doctor failed')
         }
