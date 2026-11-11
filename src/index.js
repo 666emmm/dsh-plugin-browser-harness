@@ -14,6 +14,20 @@ import { runJson, jsonSnippet, resolveHarnessBin, resolveMcpBin, installGuidance
 import { checkUpdates, runCliUpdate, publishToGithub } from './update.js'
 import { runUpdateDiagnostics } from './diagnostics.js'
 import { dispatchRepair, resetRepairSession, readState as readRepairState, stateFile } from './repair.js'
+import {
+  setPromptSender,
+  setLogger as setWatcherLogger,
+  watcherStatus,
+  stopWatching,
+  flushNow,
+  startWatching,
+} from './annotation-watcher.js'
+import {
+  summary as annotationSummary,
+  clearSession as clearAnnotationSession,
+  flush as flushAnnotations,
+  listFor as listAnnotations,
+} from './annotation-store.js'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
@@ -223,11 +237,100 @@ async function handleUpdate(req, res) {
   }
 }
 
+// ── annotation handlers ──
+// 批注相关的状态查询与手动操作。投递本身由 annotation-watcher 的后台轮询完成，
+// 这些路由只是让人能从设置页/curl 看见"现在谁持有浏览器、队列里有什么"。
+async function handleAnnotationStatus(_req, res) {
+  try {
+    send(res, {
+      ok: true,
+      watcher: watcherStatus(),
+      store: annotationSummary(),
+      services: { sessionController: ctxRef.sessionController !== undefined },
+    })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+// 等价于 browser_annotate 工具，但不经过模型那一步 —— 用来从外部（curl）验证
+// "dsh 进程内的整条链路"是否成立：注入拾取器 → 认领所有权 → 起轮询器。
+// session 参数必须显式给，因为这里没有 exec.sessionId。
+async function handleAnnotationStart(req, res) {
+  try {
+    const params = new URL(req.url, 'http://localhost').searchParams
+    const sessionId = params.get('session')
+    if (!sessionId) {
+      return send(res, { ok: false, error: '需要 session 参数 / session query parameter is required' }, 400)
+    }
+    const timeoutSec = Number(params.get('timeoutSec'))
+    const result = await startWatching({
+      sessionId,
+      idleTimeoutMs: Number.isFinite(timeoutSec) && timeoutSec > 0 ? timeoutSec * 1000 : undefined,
+    })
+    send(res, { ok: result.ok, ...result, services: { sessionController: ctxRef.sessionController !== undefined } })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+// 手动触发一次投递（正常情况下不需要 —— 轮询器会自己发）。
+async function handleAnnotationFlush(req, res) {
+  try {
+    const sessionId = new URL(req.url, 'http://localhost').searchParams.get('session') || undefined
+    const result = await flushNow(sessionId)
+    flushAnnotations()
+    send(res, { ok: result.ok, ...result, watcher: watcherStatus() })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+// 列某个会话收到的批注（默认列出全部，pending=1 只看未投递的）。
+async function handleAnnotationList(req, res) {
+  try {
+    const params = new URL(req.url, 'http://localhost').searchParams
+    const sessionId = params.get('session')
+    if (!sessionId) return send(res, { ok: false, error: '需要 session 参数 / session query parameter is required' }, 400)
+    const items = listAnnotations(sessionId)
+    const pendingOnly = params.get('pending') === '1'
+    const filtered = pendingOnly ? items.filter((a) => a.delivered !== true) : items
+    send(res, {
+      ok: true,
+      sessionId,
+      total: filtered.length,
+      items: filtered.map((a) => ({
+        id: a.id,
+        comment: a.comment,
+        selector: a.element?.selector ?? null,
+        matchCount: a.element?.matchCount ?? null,
+        page: a.page?.url ?? null,
+        at: a.at ?? null,
+        delivered: a.delivered === true,
+      })),
+    })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+// 停掉监听（可选清空队列）。
+async function handleAnnotationStop(req, res) {
+  try {
+    const params = new URL(req.url, 'http://localhost').searchParams
+    const sessionId = params.get('session') || undefined
+    const result = await stopWatching({ sessionId, clear: params.get('clear') === '1' })
+    if (params.get('clear') === '1' && sessionId) clearAnnotationSession(sessionId)
+    flushAnnotations()
+    send(res, { ok: true, ...result })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
 // ── capability layer: MCP server (preferred) or this plugin's built-in tools ──
 const DEFAULT_MCP_SERVER_NAME = 'bh'
 const DEFAULT_MCP_TIMEOUT_MS = 120_000
 const DOCTOR = 'browser_doctor'
 const SELECTOR_CLICK = 'browser_click_selector'
+// The annotation tools are this plugin's own in every mode: the MCP server has no
+// notion of a human-in-the-loop picker, and the delivery path lives on the host
+// side (sessionController.prompt), which the MCP server cannot reach.
+const ANNOTATION_TOOLS = new Set([
+  'browser_annotate',
+  'browser_annotation_stop',
+  'browser_annotation_list',
+])
 
 /**
  * Read the loader row config defensively: this plugin exports no Config schema,
@@ -355,14 +458,17 @@ export async function apply(ctx, config) {
     })
   }
 
-  // 3. Tools: the doctor and the selector click are this plugin's own in every
-  //    mode; the other seven are registered only when the MCP layer is not
-  //    supplying them. (The MCP server has no selector-based click, only
-  //    coordinate `click`, so the convenience wrapper must always be ours.)
+  // 3. Tools: the doctor, the selector click and the three annotation tools are
+  //    this plugin's own in every mode; the rest are registered only when the MCP
+  //    layer is not supplying them. (The MCP server has no selector-based click
+  //    and no picker, so those wrappers must always be ours.)
   const tools = ctx.get('tools')
   if (tools !== undefined) {
     for (const tool of createBrowserTools()) {
-      if (tool.name === DOCTOR || tool.name === SELECTOR_CLICK || mode !== 'mcp') tools.register(tool)
+      const isOwn = tool.name === DOCTOR
+        || tool.name === SELECTOR_CLICK
+        || ANNOTATION_TOOLS.has(tool.name)
+      if (isOwn || mode !== 'mcp') tools.register(tool)
     }
   }
 
@@ -377,6 +483,42 @@ export async function apply(ctx, config) {
     })
   }
 
+  // 3c. 批注投递：把 sessionController.prompt 包成 watcher 能调的形状。
+  //     这是"人在页面上点发送 → 会话里多一条消息"的唯一出口 —— 模型只在收到
+  //     消息时运行，所以必须真的 prompt 进去，不能只是塞草稿。
+  //     调用形态照抄 repair.js 里已验证过的那套（mode:'queue' + AbortSignal）。
+  setPromptSender(async ({ sessionId, text, requestId }) => {
+    const sc = ctxRef.sessionController
+    if (sc === undefined || typeof sc.prompt !== 'function') {
+      return { ok: false, error: 'sessionController 不可用，无法投递批注 / sessionController unavailable' }
+    }
+    const abort = new AbortController()
+    const timer = setTimeout(() => { try { abort.abort() } catch { /* ignore */ } }, 30_000)
+    try {
+      await sc.prompt({
+        requestId,
+        sessionId,
+        // 'queue' 而不是 'steer'：用户在模型还在回答时点发送也算数，
+        // 消息排队等当前这一轮跑完即可，不该打断它。
+        mode: 'queue',
+        content: [{ type: 'text', text }],
+        clientTimeZone: 'Asia/Shanghai',
+      }, abort.signal)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: errMsg(error) }
+    } finally {
+      clearTimeout(timer)
+    }
+  })
+  setWatcherLogger((message) => {
+    try { ctx.logger?.info?.(`browser-harness: ${message}`) } catch { /* best effort */ }
+  })
+  ctx.effect(() => () => {
+    // 插件卸载时停掉轮询器，别让定时器活在已经不存在的插件里。
+    void stopWatching({})
+  }, 'browser-harness: annotation watcher teardown')
+
   // 3. 设置 > 浏览器连接 HTTP API.
   ctx.inject(['webServer'], (wctx) => {
     const routes = [
@@ -389,6 +531,11 @@ export async function apply(ctx, config) {
       { kind: 'exact', path: '/browser-harness/api/update', handler: handleUpdate },
       { kind: 'exact', path: '/browser-harness/api/repair-status', handler: handleRepairStatus },
       { kind: 'exact', path: '/browser-harness/api/repair-reset', handler: handleRepairReset },
+      { kind: 'exact', path: '/browser-harness/api/annotation-status', handler: handleAnnotationStatus },
+      { kind: 'exact', path: '/browser-harness/api/annotation-start', handler: handleAnnotationStart },
+      { kind: 'exact', path: '/browser-harness/api/annotation-flush', handler: handleAnnotationFlush },
+      { kind: 'exact', path: '/browser-harness/api/annotation-list', handler: handleAnnotationList },
+      { kind: 'exact', path: '/browser-harness/api/annotation-stop', handler: handleAnnotationStop },
     ]
     for (const route of routes) {
       wctx.effect(() => wctx.webServer.register(route), `browser-harness: ${route.path} route`)

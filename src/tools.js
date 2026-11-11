@@ -4,6 +4,8 @@
 // Each tool pipes a Python snippet into the browser-harness CLI; arguments
 // travel base64-encoded so quotes/newlines never break the snippet.
 import { runJson, jsonSnippet, installGuidance } from './engine.js'
+import { startWatching, stopWatching, watcherStatus } from './annotation-watcher.js'
+import { listFor, pendingFor } from './annotation-store.js'
 
 const renderText = (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }]
 
@@ -105,6 +107,36 @@ async function execSnippet(args, body, opts) {
     throw new Error(err && err.message ? err.message : installGuidance())
   }
   return res.value
+}
+
+/**
+ * Extract the owning DSH session id from a tool execution context.
+ *
+ * The `exec` object a tool receives is a `ToolRunContext`, whose fields are
+ * `callId / name / arguments / agent / signal / deferContext / concludeTurn`
+ * — there is NO `sessionId` field, so reading `exec.sessionId` always yields
+ * undefined. The session lives on the agent: `Agent.id` is the `SessionId`.
+ *
+ * Probed in order because hosts have moved this around:
+ *   exec.agent.id            → the documented place (Agent.id: SessionId)
+ *   exec.agent.sessionId     → defensive alias
+ *   exec.sessionId/session.id→ older shapes
+ * Returned value is normalised to the `session-<uuid>` form by the watcher.
+ *
+ * @param {object|undefined} exec - the tool run context.
+ * @returns {string|null}
+ */
+function sessionIdOf(exec) {
+  const candidates = [
+    exec?.agent?.id,
+    exec?.agent?.sessionId,
+    exec?.sessionId,
+    exec?.session?.id,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate !== '') return candidate
+  }
+  return null
 }
 
 // ── tools ────────────────────────────────────────────────────────────────────
@@ -427,6 +459,135 @@ except Exception as e:
           throw new Error((res.error && res.error.message) || 'doctor failed')
         }
         return res.value
+      },
+    }),
+
+    defineTool({
+      name: 'browser_annotate',
+      description: '在页面上装一个元素批注拾取器，让**人**自己点元素、写批注。人点「发送」后，批注会自动作为一条消息投递到当前会话，模型不用轮询、人也不用切回来。适合"我知道要改哪个元素但很难用文字描述"的场景。/ Install an element-annotation picker in the page so the HUMAN can point at an element and write a comment. Each send is delivered to this session automatically as a new message. Use when the user knows which element they mean but describing it in words would be painful.',
+      parameters: {
+        timeoutSec: {
+          type: 'number',
+          description: '多久没有新批注就自动停止监听（秒，默认 3600）。/ Stop watching after this many idle seconds (default 3600).',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            sessionId: { type: 'string' },
+            tab: { type: 'object' },
+            recovered: { type: 'number' },
+            hint: { type: 'string' },
+            error: { type: 'string' },
+            execShape: { type: 'object' },
+            agentShape: { type: 'object' },
+          },
+          additionalProperties: true,
+        },
+        render: renderText,
+      },
+      async execute(args, exec) {
+        const sessionId = sessionIdOf(exec)
+        if (sessionId === null) {
+          // TEMP DIAGNOSTIC: surface the real exec shape so the field name can be
+          // fixed from evidence instead of guessing again.
+          const shape = {}
+          for (const key of Object.keys(exec ?? {})) {
+            const v = exec[key]
+            shape[key] = v === null ? 'null'
+              : typeof v === 'object' ? `{${Object.keys(v).slice(0, 12).join(',')}}`
+              : `${typeof v}:${String(v).slice(0, 40)}`
+          }
+          const agentShape = {}
+          for (const key of Object.getOwnPropertyNames(exec?.agent ?? {})) {
+            agentShape[key] = typeof exec.agent[key]
+          }
+          return {
+            ok: false,
+            error: '无法确定当前会话 id / cannot determine the current session id',
+            execShape: shape,
+            agentShape,
+          }
+        }
+        const idleTimeoutMs = Number.isFinite(args?.timeoutSec) && args.timeoutSec > 0
+          ? args.timeoutSec * 1000
+          : undefined
+        return startWatching({ sessionId, idleTimeoutMs })
+      },
+    }),
+
+    defineTool({
+      name: 'browser_annotation_stop',
+      description: '停止元素批注监听，并（可选）清空本会话还没处理完的批注。/ Stop watching for annotations and optionally drop the ones this session has not handled yet.',
+      parameters: {
+        clear: {
+          type: 'boolean',
+          description: '是否同时清空本会话已排队但未投递的批注（默认 false）。/ Also discard this session\'s queued annotations (default false).',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            released: { type: 'boolean' },
+            cleared: { type: 'number' },
+            watcher: { type: 'object' },
+          },
+        },
+        render: renderText,
+      },
+      async execute(args, exec) {
+        const sessionId = sessionIdOf(exec) ?? undefined
+        return stopWatching({ sessionId, clear: args?.clear === true })
+      },
+    }),
+
+    defineTool({
+      name: 'browser_annotation_list',
+      description: '列出本会话收到过（或还没处理）的页面批注。/ List the page annotations this session has received (or still has pending).',
+      parameters: {
+        pendingOnly: {
+          type: 'boolean',
+          description: '只看还没投递给模型的（默认 false）。/ Only annotations not yet handed to the model (default false).',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            total: { type: 'number' },
+            items: { type: 'array' },
+            watcher: { type: 'object' },
+          },
+        },
+        render: renderText,
+      },
+      async execute(args, exec) {
+        const sessionId = sessionIdOf(exec)
+        if (sessionId === null) {
+          return { ok: false, total: 0, items: [], error: 'cannot determine session id' }
+        }
+        const items = args?.pendingOnly === true ? pendingFor(sessionId) : listFor(sessionId)
+        return {
+          ok: true,
+          total: items.length,
+          items: items.map((a) => ({
+            id: a.id,
+            comment: a.comment,
+            selector: a.element?.selector ?? null,
+            page: a.page?.url ?? null,
+            at: a.at ?? null,
+            delivered: a.delivered === true,
+          })),
+          watcher: watcherStatus(),
+        }
       },
     }),
   ]

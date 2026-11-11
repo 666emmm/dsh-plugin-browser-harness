@@ -111,12 +111,12 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
 
   | 模式 | 工具面 | 说明 |
   |---|---|---|
-  | `mcp`（默认） | 23 个 `mcp__bh__browser_*` + `browser_doctor` | 通过宿主自带 `@deepseek-ai/dsh-mcp-client` 挂载 `browser-harness-mcp`；工具集随 CLI 升级自动增长。需要 CLI ≥0.1.13 且安装 `[mcp]` extra |
-  | `builtin` | 8 个 `browser_*` | 插件内置工具（下表），不依赖 `[mcp]`；CLI 缺失或找不到 `browser-harness-mcp` 时也会自动降级到这里 |
+  | `mcp`（默认） | 23 个 `mcp__bh__browser_*` + 5 个插件自带工具 | 通过宿主自带 `@deepseek-ai/dsh-mcp-client` 挂载 `browser-harness-mcp`；工具集随 CLI 升级自动增长。需要 CLI ≥0.1.13 且安装 `[mcp]` extra |
+  | `builtin` | 12 个 `browser_*` | 插件内置工具（下表），不依赖 `[mcp]`；CLI 缺失或找不到 `browser-harness-mcp` 时也会自动降级到这里 |
 
   `mcp` 模式工具（23，前缀 `mcp__bh__browser_`）：`new_tab` `goto` `page_info` `click` `type` `fill` `press` `scroll` `screenshot` `list_tabs` `current_tab` `switch_tab` `close_tab` `ensure_real_tab` `wait` `wait_for_load` `wait_for_element` `js` `cdp` `upload_file` `http_get` `start_recording` `stop_recording`
 
-  `builtin` 模式 8 个：
+  `builtin` 模式 12 个：
 
   | 工具 | 作用 |
   |---|---|
@@ -124,10 +124,36 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
   | `browser_new_tab` | 新标签页打开 URL（首次导航必用） |
   | `browser_goto` | 当前标签导航 |
   | `browser_click` | 视口坐标点击 |
+  | `browser_click_selector` | 按 CSS 选择器点击 —— **任何模式下都存在**（MCP 只有坐标点击） |
   | `browser_type` | 聚焦元素输入文本 |
   | `browser_js` | 执行 JS 并返回 JSON 结果 |
   | `browser_screenshot` | 截图返回文件路径 |
+  | `browser_annotate` | ★ 在页面上装元素批注拾取器，批注自动回到本会话 |
+  | `browser_annotation_stop` | ★ 停止监听并释放浏览器（可选清空队列） |
+  | `browser_annotation_list` | ★ 列出本会话收到的批注 |
   | `browser_doctor` | 连接诊断（Chrome / daemon / CLI）—— **任何模式下都存在** |
+
+- **★ 元素批注 / element annotation**（v0.4.0 新增）：人在页面上圈一个元素、写一句话，这条批注**变成一条用户消息投递回发起它的会话**。人不用切回对话，模型也不用猜「你说的是哪个元素」。
+
+  ```
+  你说：「帮我改这个页面的价格显示」
+    → 模型调 browser_annotate()
+    → 页面右下角出现浮层面板
+    → 你点「开始选择」→ 点元素 → 写批注 → 点「发送」
+    → 批注进入当前会话，你可以立刻切去别的标签页
+  ```
+
+  会话 ID 是**自动的**（从 `exec.agent.id` 取），不需要指定。
+
+  三条相关能力：
+
+  | 能力 | 说明 |
+  |---|---|
+  | **Shadow DOM 穿透** | B站评论区那种 4 层嵌套 shadow 也能精确选中内部按钮（`elementFromPoint` 只给宿主，用 `composedPath()` / `shadowRoot.elementFromPoint()` 穿透） |
+  | **关闭即释放** | 点面板「关闭」→ 停止轮询 + 释放浏览器所有权，不会后台空转 |
+  | **切标签页自动重注入** | 面板因导航消失后自动装回（每 5 秒检测），但「关闭」不会让它自己弹回来 |
+
+  投递走 `sessionController.prompt({ mode: 'queue' })` —— 模型正在回答时你发的批注不会打断它。
 
 - **提示词注入 / prompt**：按当前模式注入对应的工具名（`mcp__bh__browser_*` 或 `browser_*`）
 - **设置页 / settings**：连接状态（CLI / daemon / 当前页面）、一键诊断、截图、远程调试引导
@@ -138,20 +164,32 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
 
 ```
 ┌─────────────────────── DSH 进程（Node/cordis）──────────────────────┐
-│  src/index.js   ── 入口：能力层选择 + systemPrompt + HTTP API        │
-│  src/engine.js  ── CLI 定位（resolveHarnessBin/resolveMcpBin）+ 调用 │
-│  src/tools.js   ── builtin 模式的 8 个工具（defineTool，零依赖）     │
-│  src/update.js  ── 更新检测（GitHub 项目 + PyPI CLI）+ 执行升级      │
+│  src/index.js              ── 入口：能力层选择 + systemPrompt + HTTP │
+│  src/engine.js             ── CLI 定位 + 调用                        │
+│  src/tools.js              ── builtin 模式的 12 个工具（零依赖）     │
+│  src/daemon-ipc.js         ── ★ 直连 daemon 的 TCP（往返 1–7 ms）    │
+│  src/picker.js             ── ★ 页面内浮层拾取器（字符串模板注入）   │
+│  src/annotation-store.js   ── ★ 批注队列 + 所有权 + 消息格式化       │
+│  src/annotation-watcher.js ── ★ 每秒轮询事件，合并投递              │
+│  src/update.js             ── 更新检测 + 执行升级                    │
 └───────────┬───────────────────────────────────────┬─────────────────┘
             │ mcp 模式（默认）                       │ builtin 模式
             ▼                                       ▼
   dsh-mcp-client ──stdio JSON-RPC──▶ browser-harness-mcp      stdin 喂片段
                                      （Python，CDP 连本地 Chrome）
+                                                │
+                          ★ 批注路径（不走网络、不走 CLI 子进程）
+                          页面 JS → window.__bhAnnotation(payload)
+                                  → daemon 记 Runtime.bindingCalled 事件
+                                  → watcher drain_events（1 Hz）
+                                  → sessionController.prompt(mode:'queue')
+                                  → 会话里多一条用户消息
 ```
 
 ### 关键设计
 
-- **能力层可切换**：`mcp` 模式把 CLI 自带的服务端（23 工具）挂给宿主的 `@deepseek-ai/dsh-mcp-client`；`builtin` 模式用插件自带的 8 个工具。找不到 `browser-harness-mcp` 时自动降级，插件本身永远能激活。
+- **能力层可切换**：`mcp` 模式把 CLI 自带的服务端（23 工具）挂给宿主的 `@deepseek-ai/dsh-mcp-client`；`builtin` 模式用插件自带的 12 个工具。找不到 `browser-harness-mcp` 时自动降级，插件本身永远能激活。
+- **批注为什么不用 MCP**：MCP 的 23 个工具**没有任何注入能力** —— 拾取器要在页面里常驻自己的 JS、要监听 CDP binding 事件，这些 MCP 都不提供。所以批注走独立的 daemon IPC 通道（`daemon-ipc.js`），每 tick 往返 1–7 ms，不 spawn 子进程。
 - **Node ⇄ Python 桥**：`runHarness(code)` 把 Python 片段经 stdin 喂给 `browser-harness`，helpers（`page_info`/`new_tab`/`click_at_xy`…）预导入；`runHarnessArgs(args)` 处理 `--version`/`--update` 等命令行参数。统一 `print(json.dumps(_result, ensure_ascii=True))` 输出，Node 端解析最后一行 JSON。
 - **参数防注入**：工具参数 `JSON.stringify` 后 base64 编码嵌进 Python 片段，杜绝引号/换行/中文破坏语法。
 - **零运行时依赖**：工具描述符手写 dsh-tools 子集（`hoistRequired`/`validateArgs`），不 import `@deepseek-ai/dsh-tools`，规避 pnpm 布局差异。
@@ -181,6 +219,16 @@ browser-harness --doctor     # 2. 全部 [ok] = 连接就绪
 | GET | `/browser-harness/api/chrome-hint` | 远程调试引导 |
 | GET | `/browser-harness/api/update-check[?force=1]` | 更新检测 |
 | POST | `/browser-harness/api/update` | 执行更新，body 须 `{"confirm":true}` |
+| GET | `/browser-harness/api/check-update[?repair=0&force=1]` | 深度检测（逐层 a/b/c/d） |
+| GET | `/browser-harness/api/repair-status` | 自愈会话状态 |
+| GET | `/browser-harness/api/repair-reset` | 忘掉记住的会话 |
+| GET | `/browser-harness/api/annotation-start?session=<id>` | ★ 启动批注（等价于 `browser_annotate`，session 必填） |
+| GET | `/browser-harness/api/annotation-status` | ★ 谁持有浏览器、轮询计数、投递统计 |
+| GET | `/browser-harness/api/annotation-flush[?session=<id>]` | ★ 手动触发一次投递 |
+| GET | `/browser-harness/api/annotation-list?session=<id>[&pending=1]` | ★ 列某会话的批注 |
+| GET | `/browser-harness/api/annotation-stop[?session=<id>&clear=1]` | ★ 停止监听 + 释放所有权 |
+
+> `session` 参数用 `session-<uuid>` 或裸 uuid 都可以，内部会归一化。
 
 ## 开发 / Develop
 
@@ -226,6 +274,11 @@ npm pack            # 打 tarball 用于本地安装
 - **stdin 编码**：CLI 调用必须设 `PYTHONIOENCODING=utf-8`，否则 Windows GBK 解码崩。
 - **代理**：GitHub 访问靠 git 代理配置（Node fetch 不走 HTTP_PROXY）；PyPI 直连。
 - **离线语义**：检测失败时 `latest: null`，UI 明确区分「已是最新」vs「无法检测」，绝不谎报。
+- **改完代码必须重启 dsh**：`src/` 是 ESM 源码，dsh 直接 import，模块在进程启动时加载一次就缓存。文件 mtime 再新也不影响正在跑的进程 —— 这是最容易误判成「改错了」的坑。
+- **closed shadow root 穿不过**：`attachShadow({mode:'closed'})` 的宿主，脚本拿不到 `host.shadowRoot`，只能按坐标定位。这是浏览器限制，批注消息里会标 `reachable: false`。
+- **拒绝执行 JS 的页面**：`chrome://`、部分 CSP 严格站点会让 `Runtime.evaluate` 挂到超时，此时无法注入拾取器。
+- **同一时刻只有一个会话能持有批注**：后发起的会顶掉前一个（`previousOwner` 返回被顶掉的那个）。这是刻意设计 —— 两套拾取器同时存在会让人搞不清批注发去了哪。
+- **批注草稿不持久化**：面板被重新注入时（切标签页、SPA 跳转），文本框里没发送的内容会丢。已发送的不受影响。
 
 ## License
 

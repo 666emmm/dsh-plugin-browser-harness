@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-browser-harness",
-  "version": "0.3.2",
-  "description": "browser-harness 鎻掍欢锛氳 DeepSeek Harness 鐨?Agent 閫氳繃鏈湴 Chrome CDP 瀹屾垚缃戦〉浜や簰锛堢偣鍑?杈撳叆/瀵艰埅/鎴浘锛夛紝骞舵彁渚?璁剧疆 > 娴忚鍣ㄨ繛鎺?璇婃柇鐣岄潰銆俠rowser-harness plugin: agent-driven local Chrome control via CDP, with a connection diagnostics settings page.",
+  "version": "0.4.0",
+  "description": "browser-harness 插件：让 DeepSeek-Harness 的 Agent 通过本地 Chrome CDP 完成网页交互（点击/输入/导航/截图），并支持在页面上圈选元素写批注、批注自动回到当前会话。Browser-harness plugin: agent-driven local Chrome control via CDP, with an in-page element annotation picker that posts back to the originating session, plus a connection diagnostics settings page.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -15,7 +15,8 @@
     "scripts",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "node scripts/smoke-test.js",
@@ -36,7 +37,10 @@
     "browser-harness",
     "browser-use",
     "cdp",
-    "chrome"
+    "chrome",
+    "annotation",
+    "shadow-dom",
+    "element-picker"
   ],
   "dsh": {
     "bundle": {
